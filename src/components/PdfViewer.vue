@@ -204,6 +204,8 @@ function readAndLoadFile(file: File): void {
     const buffer = e.target?.result
     if (buffer instanceof ArrayBuffer) {
       loadPdf(buffer, file.name)
+    } else if (buffer != null) {
+      error.value = '不支持的文件格式'
     }
   }
   reader.onerror = () => {
