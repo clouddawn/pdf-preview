@@ -478,6 +478,7 @@ function handleScroll(): void {
 .pdf-viewer__canvas-area--scroll {
   overflow: hidden;
   padding: 0;
+  align-items: stretch; /* 覆盖基类的 align-items: flex-start，使 scroll-container 拉伸填充父容器高度 */
 }
 
 .canvas-area__canvas {
