@@ -14,6 +14,23 @@ export type ViewMode = 'single' | 'scroll'
 /** 滚动模式下同时渲染的最大页数 */
 const SCROLL_CONCURRENCY = 3
 
+/** PDF 文本项（匹配 pdfjs-dist 的 TextItem 结构） */
+export interface PdfTextItem {
+  str: string
+  transform: number[]
+  width: number
+  height: number
+}
+
+/** 页面文本提取结果 */
+export interface PageTextResult {
+  items: PdfTextItem[]
+  /** 未缩放的页面宽度（scale=1 时的 viewport 宽度） */
+  pageWidth: number
+  /** 未缩放的页面高度（scale=1 时的 viewport 高度） */
+  pageHeight: number
+}
+
 export function usePdfRenderer() {
   // ========== 状态 ==========
   /** 单页模式的 canvas ref */
@@ -253,6 +270,31 @@ export function usePdfRenderer() {
     }
   }
 
+  /** 获取指定页的文本内容和页面尺寸（供搜索功能使用） */
+  async function getPageTextContent(pageNum: number): Promise<PageTextResult | null> {
+    if (!pdfDoc) return null
+    try {
+      const page = await pdfDoc.getPage(pageNum)
+      const unscaledViewport = page.getViewport({ scale: 1 })
+      const textContent = await page.getTextContent()
+      page.cleanup()
+      // 提取文本项（过滤掉 TextMarkedContent）
+      const items: PdfTextItem[] = []
+      for (const item of textContent.items) {
+        if ('str' in item) {
+          items.push({ str: item.str, transform: item.transform, width: item.width, height: item.height })
+        }
+      }
+      return {
+        items,
+        pageWidth: unscaledViewport.width,
+        pageHeight: unscaledViewport.height,
+      }
+    } catch {
+      return null
+    }
+  }
+
   /** 取消所有活跃的渲染任务 */
   function cancelRender(): void {
     for (const task of activeRenderTasks) {
@@ -305,7 +347,7 @@ export function usePdfRenderer() {
     for (let i = 1; i <= totalPages.value; i++) {
       const canvas = canvasRefs.get(i)
       if (!canvas) continue
-      const pageEl = canvas.parentElement
+      const pageEl = canvas.closest<HTMLElement>('[data-page]')
       if (!pageEl) continue
 
       const rect = pageEl.getBoundingClientRect()
@@ -337,7 +379,7 @@ export function usePdfRenderer() {
   function scrollToPage(pageNum: number, containerEl: HTMLElement): void {
     const canvas = canvasRefs.get(pageNum)
     if (!canvas || !containerEl) return
-    const pageEl = canvas.parentElement
+    const pageEl = canvas.closest<HTMLElement>('[data-page]')
     if (!pageEl) return
 
     // 计算目标页相对于容器的偏移
@@ -485,5 +527,6 @@ export function usePdfRenderer() {
     setCanvasRef,
     updateVisiblePage,
     scrollToPage,
+    getPageTextContent,
   }
 }

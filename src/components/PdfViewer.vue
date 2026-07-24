@@ -51,6 +51,44 @@
         >
           下一页 →
         </button>
+
+        <!-- 搜索栏 -->
+        <span v-if="isLoaded" class="toolbar__divider toolbar__divider--search"></span>
+        <div v-if="isLoaded" class="toolbar__search">
+          <input
+            v-model="searchQuery"
+            type="text"
+            class="search__input"
+            placeholder="搜索关键词..."
+            :disabled="isSearching"
+            @keydown.enter="handleSearch"
+            @keydown.escape="handleSearchClear"
+          />
+          <span
+            v-if="searchQuery.trim()"
+            class="search__result-count"
+          >{{ searchMatches.length > 0 ? (searchCurrentIndex + 1) + ' / ' + searchMatches.length : '无结果' }}</span>
+          <button
+            v-if="searchQuery.trim()"
+            class="toolbar__btn search__nav-btn"
+            :disabled="searchMatches.length === 0"
+            title="上一个匹配"
+            @click="handleSearchPrev"
+          >▲</button>
+          <button
+            v-if="searchQuery.trim()"
+            class="toolbar__btn search__nav-btn"
+            :disabled="searchMatches.length === 0"
+            title="下一个匹配"
+            @click="handleSearchNext"
+          >▼</button>
+          <button
+            v-if="searchQuery.trim()"
+            class="toolbar__btn search__close-btn"
+            title="清除搜索"
+            @click="handleSearchClear"
+          >✕</button>
+        </div>
       </div>
 
       <!-- 右侧：缩放控制 + 模式切换 -->
@@ -118,20 +156,62 @@
           class="scroll__page"
           :data-page="i"
         >
-          <canvas
-            :ref="(el: any) => setCanvasRef(i, el as HTMLCanvasElement)"
-            class="scroll__canvas"
-          ></canvas>
+          <div class="scroll__canvas-wrapper">
+            <canvas
+              :ref="(el: any) => setCanvasRef(i, el as HTMLCanvasElement)"
+              class="scroll__canvas"
+            ></canvas>
+            <!-- 搜索高亮叠加层 -->
+            <div
+              v-if="hasPageMatches(i)"
+              class="scroll__highlights"
+            >
+              <div
+                v-for="(rect, ri) in getPageHighlightData(i).rects"
+                :key="ri"
+                class="highlight-rect"
+                :class="{ 'highlight-rect--active': getPageHighlightData(i).activeIndex === ri }"
+                :style="{
+                  left: rect.left + 'px',
+                  top: rect.top + 'px',
+                  width: rect.width + 'px',
+                  height: rect.height + 'px',
+                }"
+              ></div>
+            </div>
+          </div>
           <span class="scroll__page-label">第 {{ i }} 页</span>
         </div>
       </div>
 
-      <!-- ===== 单页模式（原有逻辑） ===== -->
-      <canvas
+      <!-- ===== 单页模式 ===== -->
+      <div
         v-if="isLoaded && !error && !isScrollMode"
-        ref="canvasRef"
-        class="canvas-area__canvas"
-      ></canvas>
+        class="single__canvas-wrapper"
+      >
+        <canvas
+          ref="canvasRef"
+          class="canvas-area__canvas"
+        ></canvas>
+        <!-- 搜索高亮叠加层 -->
+        <div
+          v-if="hasPageMatches(currentPage)"
+          class="scroll__highlights"
+        >
+          <div
+            v-for="(rect, ri) in getPageHighlightData(currentPage).rects"
+            :key="ri"
+            class="highlight-rect"
+            :class="{ 'highlight-rect--active': getPageHighlightData(currentPage).activeIndex === ri }"
+            :style="{
+              left: rect.left + 'px',
+              top: rect.top + 'px',
+              width: rect.width + 'px',
+              height: rect.height + 'px',
+            }"
+          ></div>
+        </div>
+      </div>
     </main>
 
     <!-- ========== 底部状态栏 ========== -->
@@ -146,8 +226,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, type Ref } from 'vue'
+import { ref, watch, computed, type Ref } from 'vue'
 import { usePdfRenderer } from '@/composables/usePdfRenderer'
+import { usePdfSearch } from '@/composables/usePdfSearch'
 
 // ========== PDF 渲染器 ==========
 const {
@@ -172,7 +253,78 @@ const {
   setCanvasRef,
   updateVisiblePage,
   scrollToPage,
+  getPageTextContent,
 } = usePdfRenderer()
+
+// ========== 搜索 ==========
+const {
+  query: searchQuery,
+  matches: searchMatches,
+  currentMatchIndex: searchCurrentIndex,
+  isSearching,
+  searchDebounced,
+  nextMatch,
+  prevMatch,
+  clearSearch,
+  refreshSearch,
+  hasPageMatches,
+  getPageHighlightData,
+} = usePdfSearch(getPageTextContent, totalPages, scale, isLoaded)
+
+/** 获取当前搜索匹配所在页码（用于导航滚动） */
+const currentMatchPage = computed(() => {
+  const idx = searchCurrentIndex.value
+  if (idx < 0 || idx >= searchMatches.value.length) return -1
+  return searchMatches.value[idx].pageNum
+})
+
+// 搜索输入防抖
+watch(searchQuery, (val) => {
+  if (!isLoaded.value) return
+  searchDebounced(val)
+})
+
+// 缩放变化 → 重新计算高亮位置
+watch(scale, () => {
+  if (searchQuery.value.trim()) refreshSearch()
+})
+
+// 加载新 PDF → 清除搜索
+watch(isLoaded, (loaded) => {
+  if (!loaded) clearSearch()
+})
+
+// 搜索导航处理
+function handleSearch(): void {
+  if (searchQuery.value.trim()) {
+    searchDebounced(searchQuery.value, 0) // 立即搜索
+  }
+}
+
+function handleSearchNext(): void {
+  nextMatch()
+  scrollToCurrentMatch()
+}
+
+function handleSearchPrev(): void {
+  prevMatch()
+  scrollToCurrentMatch()
+}
+
+function handleSearchClear(): void {
+  clearSearch()
+}
+
+function scrollToCurrentMatch(): void {
+  const pageNum = currentMatchPage.value
+  if (pageNum < 1) return
+  if (isScrollMode.value) {
+    const el = scrollContainerRef.value
+    if (el) scrollToPage(pageNum, el)
+  } else {
+    goToPage(pageNum)
+  }
+}
 
 // ========== 滚动容器 ref ==========
 const scrollContainerRef: Ref<HTMLElement | null> = ref(null)
@@ -337,6 +489,71 @@ function handleScroll(): void {
   height: 20px;
   background: #d9d9d9;
   margin: 0 4px;
+}
+
+.toolbar__divider--search {
+  margin: 0 2px;
+}
+
+/* ========== 搜索栏 ========== */
+.toolbar__search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.search__input {
+  width: 140px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #333;
+  outline: none;
+  transition: border-color 0.2s ease;
+
+  &:focus {
+    border-color: @primary;
+    box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+  }
+
+  &:disabled {
+    background: #f5f5f5;
+    color: #bfbfbf;
+  }
+}
+
+.search__result-count {
+  font-size: 12px;
+  color: #666;
+  min-width: 32px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.search__nav-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 11px;
+  justify-content: center;
+}
+
+.search__close-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 14px;
+  justify-content: center;
+  color: #999;
+
+  &:hover:not(:disabled) {
+    color: #ff4d4f;
+    border-color: #ff4d4f;
+    background: #fff1f0;
+  }
 }
 
 /* ========== 按钮 ========== */
@@ -531,6 +748,38 @@ function handleScroll(): void {
   font-size: 12px;
   color: #999;
   user-select: none;
+}
+
+/* ========== Canvas 包裹层（用于高亮叠加层定位） ========== */
+.scroll__canvas-wrapper,
+.single__canvas-wrapper {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+}
+
+/* ========== 搜索高亮叠加层 ========== */
+.scroll__highlights {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.highlight-rect {
+  position: absolute;
+  background: rgba(255, 255, 0, 0.35);
+  border-radius: 2px;
+  mix-blend-mode: multiply;
+  transition: background 0.15s ease;
+
+  &--active {
+    background: rgba(255, 140, 0, 0.55);
+    z-index: 1;
+  }
 }
 
 /* ========== 占位状态 ========== */
